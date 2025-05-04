@@ -1,0 +1,115 @@
+import PyPDF2
+import re
+import json
+import requests
+from time import sleep
+import random
+from googlesearch import search
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+
+def extract_lawyer_data_from_pdf(pdf_path: str) -> List[Dict]:
+    lawyers = []
+    try:
+        with open(pdf_path, 'rb') as pdf_file:
+            reader = PyPDF2.PdfReader(pdf_file)
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    matches = re.findall(
+                        r"([A-ZÀ-Ú\s]+)\s+[-–]?\s*(?:OAB/?\s*:?|Registro)\s*(\w{2})[\s:-]*([\d\.-]+)",
+                        text,
+                        flags=re.IGNORECASE
+                    )
+                    for nome, uf_oab, numero_oab in matches:
+                        lawyers.append({
+                            "nome": re.sub(r'\s+', ' ', nome).strip(),
+                            "numero_oab": numero_oab.replace('.', '').strip(),
+                            "uf_oab": uf_oab.upper().strip()
+                        })
+    except Exception as e:
+        print(f"Erro na extração PDF: {e}")
+    return lawyers
+
+def search_lawyer_info(nome: str, numero_oab: str, uf_oab: str) -> Dict:
+    contact_info = {
+        "telefone": None,
+        "email": None,
+        "linkedin": None,
+        "processos": []
+    }
+
+    queries = [
+        f'"{nome}" "{numero_oab}/{uf_oab}" advogado site:linkedin.com',
+        f'"{nome}" OAB {uf_oab} {numero_oab} site:oab.org.br',
+        f'"{nome}" "{numero_oab}-{uf_oab}" processo jurídico',
+        f'"{nome}" "{uf_oab}" "advogado" telefone email'
+    ]
+
+    trusted_domains = ['linkedin.com', 'jusbrasil.com.br', 'oab.org.br']
+    
+    try:
+        for query in queries:
+            results = search(
+                query,
+                num_results=2,
+                lang="pt-BR",
+                sleep_interval=random.randint(2,5))
+            
+            for url in results:
+                if any(domain in url for domain in trusted_domains):
+                    domain = urlparse(url).netloc.lower()
+                    
+                    # Extração específica para LinkedIn
+                    if 'linkedin.com' in domain:
+                        contact_info["linkedin"] = url
+                        # Web scraping básico para dados estruturados
+                        try:
+                            response = requests.get(url, timeout=10)
+                            soup = BeautifulSoup(response.text, 'html.parser')
+                            email_element = soup.find('a', href=re.compile(r'mailto:'))
+                            if email_element:
+                                contact_info["email"] = email_element['href'].replace('mailto:', '')
+                        except:
+                            pass
+                    
+                    # Extração de processos jurídicos
+                    elif 'jusbrasil.com.br' in domain:
+                        contact_info["processos"].append(url)
+                    
+                    # Site oficial da OAB
+                    elif 'oab.org.br' in domain:
+                        contact_info["site_oab"] = url
+                    
+                    delayed_request()
+            
+            sleep(random.uniform(1.5, 3.5))
+    
+    except Exception as e:
+        print(f"Erro na busca: {str(e)[:100]}...")
+    
+    return contact_info
+
+def main():
+    pdf_files = ["/content/akura-2025-04-25.pdf", "/content/integralmed-2025-04-25.pdf"]
+    all_lawyers = []
+
+    for pdf_file in pdf_files:
+        print(f"Processando: {pdf_file}")
+        lawyers = extract_lawyer_data_from_pdf(pdf_file)
+        all_lawyers.extend(lawyers)
+
+    for idx, lawyer in enumerate(all_lawyers):
+        print(f"Buscando ({idx+1}/{len(all_lawyers)}): {lawyer['nome']}")
+        additional_info = search_lawyer_info(
+            lawyer["nome"],
+            lawyer["numero_oab"],
+            lawyer["uf_oab"]
+        )
+        lawyer.update(additional_info)
+        sleep(random.randint(5,15))  # Intervalo variável
+
+    print(json.dumps(all_lawyers, indent=4, ensure_ascii=False))
+
+if __name__ == "__main__":
+    main()
